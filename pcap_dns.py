@@ -1,7 +1,10 @@
-import pyshark
 import socket
 import time
+import os
 import ipaddress
+import argparse
+import pyshark
+from pyshark.capture.capture import TSharkCrashException
 
 
 class PcapDNS:
@@ -24,12 +27,19 @@ class PcapDNS:
         self.pcap = pcap
         self.hosts = set()
         self.resolved_hosts = []
-        for packet in self.pcap:
-            self.add_host(packet)
+        try:
+            for packet in self.pcap:
+                self.add_host(packet)
+        except TSharkCrashException:
+            print("\n\033[91mERROR\033[0m: TSharkCrashException")
+            print("Not a valid packet capture file!\n")
+            # print("\n\033[91mRed ERROR\033[0m]: TSharkCrashException\nNot a valid packet capture file!\n")
+            os._exit(1)
         for i, host in enumerate(list(self.hosts)):
             if i % batch_size == 0:
                 time.sleep(delay)
-            self.resolved_hosts.append(host)
+            resolved_host = self.resolve(host)
+            self.resolved_hosts.append(resolved_host)
 
 
     def add_host(self, packet):
@@ -38,9 +48,6 @@ class PcapDNS:
         """
         if "TCP" not in packet:
             return
-
-        if packet["TCP"].dstport == '80':
-            print(packet)
 
         if "IP" in packet:
             self._check_ports(packet, ip_protocol="IP")
@@ -71,15 +78,42 @@ class PcapDNS:
             ipaddress.IPv4Address(ip)
         except ipaddress.AddressValueError:
             try:
-                name = socket.getnameinfo((ip, 0), socket.NI_NAMEREQD) # port param required but irrelevant
+                name = socket.getnameinfo((ip, 0), socket.NI_NAMEREQD)[0] # port param required but irrelevant
             except socket.gaierror:
                 name = ip
         else:
             try:
-                name = socket.gethostbyaddr(ip)
+                name = socket.gethostbyaddr(ip)[0]
             except socket.herror:
                 name = ip
-        return name[0]
+        return name
 
 
-PcapDNS(pyshark.FileCapture('./bcappcap'))
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="PCAP Reverse DNS Resolver - Perform reverse DNS on HTTP, HTTPS, and TOR traffic in a pcap file."
+    )
+    parser.add_argument("pcap_file", help="Path to the pcap file")
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=100,
+        help="Number of IP addresses to resolve in each batch. Default: 100"
+    )
+    parser.add_argument(
+        "--time-delay",
+        type=int,
+        default=1,
+        help="Time delay (in seconds) between each batch of DNS requests. Default: 1"
+    )
+    args = parser.parse_args()
+    pcap_file = pyshark.FileCapture(args.pcap_file)
+    pcapdns = PcapDNS(
+        pcap_file,
+        batch_size=args.batch_size,
+        delay=args.time_delay,
+    )
+    print()
+    for host in pcapdns.resolved_hosts:
+        print(host)
+    print()
